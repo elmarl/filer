@@ -6,12 +6,6 @@ use std::io::Error;
 use std::fs::File;
 use std::io::Read;
 
-///
-/// File transfer tool.
-/// To send a file, provide an IP address and a path to a file.
-/// To receive a file, run the tool with no arguments, or a port argument, default 7878.
-///
-
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -25,20 +19,17 @@ struct Args {
     port: u16,
 }
 
+///
+/// File transfer tool.
+/// To send a file, provide an IP address and a path to a file.
+/// To receive a file, run the tool with no arguments, or a port argument, default 7878.
+///
+/// cargo run -- --ip 127.0.0.1 -f ./Cargo.toml
+/// cargo run --
 fn main() {
     let args = Args::parse();
-    // println!("{}", &args.ip.unwrap());
-    // println!("{}", &args.file.unwrap());
-    // println!("{}", args.ip.is_empty());
-    // println!("{}", args.file.unwrap().is_empty());
-    // println!("{}", use_receive_mode(&args.ip, &args.file));
-
-    // if args.ip.as_ref().and(args.file.as_ref()) != None {
-    //     println!("Both check!");
-    // }
     if let (Some(ip), Some(file)) = (args.ip, args.file) {
         println!("Sending file {} to {}", file, ip);
-        // let mut socket = TcpStream::connect(format!("127.0.0.1:{}", args.port))?;
         match connect(&ip, &file, &args.port) {
             Ok(_res) => println!("File sent."),
             Err(_err) => println!("Could not send file.")
@@ -49,24 +40,12 @@ fn main() {
         for stream in listener.incoming() {
             let stream = stream.unwrap();
             println!("Connection established!");
-            handle_connection(stream);
+            match handle_connection(stream) {
+                Ok(_result) => println!("File received."),
+                Err(_err) => println!("Error fetching file.")
+            }
         }
     }
-    // if use_receive_mode(&args.ip, &args.file) {
-    //     println!("Sending file {} to {}", &args.file, &args.ip)
-    // } else {
-    //     println!("Waiting for connection on port {}", args.port)
-    // }
-    // println!("Hello {}! {}x", args.name, args.count);
-    // return;
-    // let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
-
-    // for stream in listener.incoming() {
-    //     let stream = stream.unwrap();
-
-    //     println!("Connection established!");
-    //     handle_connection(stream);
-    // }
 }
 
 #[inline(always)]
@@ -77,25 +56,37 @@ fn _use_receive_mode(ip: &Option<String>, file: &Option<String>) -> bool {
     false
 }
 
-fn connect(ip: &String, _file: &String, port: &u16) -> Result<bool, Error> {
+fn connect(ip: &String, file: &String, port: &u16) -> Result<(), Error> {
     let mut socket = TcpStream::connect(format!("{}:{}", ip, port))?;
     
-    let msg = std::fs::read("./Cargo.toml").unwrap();
+    let msg = std::fs::read(file).unwrap();
     socket.write(&msg[..])?;
-    return Ok(true);
+    return Ok(());
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let mut buffer = [0; 1024];
+fn handle_connection(mut stream: TcpStream) -> Result<(), Error> {
+    let mut data: Vec<u8> = Vec::new();
+    stream.read_to_end(&mut data).unwrap();
+    let mut file = File::create("./new_file.toml")?;
+    file.write_all(&data)?;
 
-    stream.read(&mut buffer).unwrap();
+    // let mut buffer = [0; 1024];
 
-    // replace invalid sequences with U+FFFD REPLACEMENT CHARACTER
-    println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
+    // stream.read(&mut buffer).unwrap();
+
+    // // write file
+    // let mut file = File::create("./new_file.toml")?;
+    // // Write a slice of bytes to the file
+    // file.write_all(&buffer)?;
+    
+
+    // // replace invalid sequences with U+FFFD REPLACEMENT CHARACTER
+    // println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
 
     // let response = "HTTP/1.1 200 OK\r\n\r\n\r\n";
     let response = format!("{}\r\nAccept: {}\r\n\r\n", "HTTP/1.1 200 OK", "*");
 
     stream.write(response.as_bytes()).unwrap();
     stream.flush().unwrap();
+    Ok(())
 }
