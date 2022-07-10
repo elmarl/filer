@@ -1,13 +1,13 @@
 use clap::Parser;
+use indicatif::ProgressBar;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error;
 use std::io::{BufReader, Read};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
-use indicatif::ProgressBar;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -18,8 +18,17 @@ struct Args {
     #[clap(short, long, value_parser)]
     file: Option<String>,
 
-    #[clap(short, long, value_parser, default_value_t = 7979)]
+    #[clap(short, long, value_parser)]
+    path: Option<String>,
+
+    #[clap(long, value_parser, default_value_t = 7979)]
     port: u16,
+}
+
+enum ProgressCommand {
+    SetLength(u64),
+    Inc(),
+    Done(),
 }
 
 ///
@@ -31,37 +40,42 @@ struct Args {
 /// cargo run
 fn main() {
     let args = Args::parse();
-    let bar = Arc::new( ProgressBar::new(1));
-    
+    let bar = Arc::new(ProgressBar::new(1));
+
     let handle;
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx): (Sender<ProgressCommand>, Receiver<ProgressCommand>) = mpsc::channel();
     if let (Some(ip), Some(file)) = (args.ip, args.file) {
         // client
-        let shared_bar = bar.clone();
-        handle = thread::spawn(move || {
-            match send_file(&ip, &file, &args.port, tx.clone(), shared_bar) {
-                Ok(_res) => (),
-                Err(_err) => println!("Could not send file."),
-            }
+        handle = thread::spawn(move || match send_file(&ip, &file, &args.port, tx) {
+            Ok(_res) => (),
+            Err(_err) => println!("Could not send file."),
         });
-    } else {
-        // server
-        let shared_bar = bar.clone();
-        handle = thread::spawn(move || {
-            let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).unwrap();
-            for stream in listener.incoming() {
-                let stream = stream.unwrap();
-                match handle_connection(stream, tx.clone(), shared_bar.clone()) {
-                    Ok(_result) => (),
-                    Err(_err) => println!("Error fetching file."),
+    } else if let Some(path) = args.path {
+        {
+            // server
+
+            handle = thread::spawn(move || {
+                let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).unwrap();
+                match listener.accept() {
+                    Ok((stream, _addr)) => match handle_connection(stream, path, tx) {
+                        Ok(_result) => (),
+                        Err(_err) => println!("Error fetching file."),
+                    },
+                    Err(e) => println!("couldn't get client: {e:?}"),
                 }
-            }
-        });
+            })
+        }
+    } else {
+        println!("See help for instructions.");
+        std::process::exit(1);
     }
-    for _received in rx {
-        bar.inc(1);
+    for received in rx {
+        match received {
+            ProgressCommand::SetLength(l) => bar.set_length(l),
+            ProgressCommand::Inc() => bar.inc(1),
+            ProgressCommand::Done() => bar.finish(),
+        }
     }
-    bar.finish();
     handle.join().unwrap();
     println!("Done!");
 }
@@ -78,24 +92,24 @@ fn send_file(
     ip: &String,
     file: &String,
     port: &u16,
-    tx: std::sync::mpsc::Sender<&str>,
-    bar: Arc<ProgressBar>
+    tx: Sender<ProgressCommand>,
 ) -> Result<(), Error> {
     let mut socket = TcpStream::connect(format!("{}:{}", ip, port))?;
-
     let mut bytes_read;
     let mut file = File::open(file)?;
     let size = file.metadata()?.len();
     const BUFFER_LEN: usize = 1024;
     let units = size as f64 / BUFFER_LEN as f64;
     let units = units.ceil() as u64;
-    bar.set_length(units);
+    tx.send(ProgressCommand::SetLength(units)).unwrap();
+    socket.write(&size.to_be_bytes())?;
     let mut buffer = [0u8; BUFFER_LEN];
     loop {
-        tx.send("").unwrap();
+        tx.send(ProgressCommand::Inc()).unwrap();
         bytes_read = file.read(&mut buffer)?;
         socket.write(&buffer)?;
         if bytes_read != BUFFER_LEN {
+            tx.send(ProgressCommand::Done()).unwrap();
             break;
         }
     }
@@ -104,24 +118,30 @@ fn send_file(
 
 fn handle_connection(
     mut stream: TcpStream,
-    tx: std::sync::mpsc::Sender<&str>,
-    bar: Arc<ProgressBar>
+    path: String,
+    tx: Sender<ProgressCommand>,
 ) -> Result<(), Error> {
-    let mut file = File::create("./new_file.gif")?;
+    let mut file = File::create(path)?;
     const BUFFER_LEN: usize = 1024;
+    const SIZE_LEN: usize = 8;
     let mut buff = [0u8; BUFFER_LEN];
+    let mut size_buff = [0u8; SIZE_LEN];
     let mut bytes_copied: usize;
+    let mut size_reader = BufReader::with_capacity(8, &stream);
     let mut reader = BufReader::with_capacity(BUFFER_LEN, &stream);
+    size_reader.read(&mut size_buff)?;
+    let units = (u64::from_be_bytes(size_buff) - SIZE_LEN as u64) / BUFFER_LEN as u64;
+    tx.send(ProgressCommand::SetLength(units)).unwrap();
+
     loop {
-        tx.send("").unwrap();
-        bar.set_length(bar.length() + 1);
+        tx.send(ProgressCommand::Inc()).unwrap();
         bytes_copied = reader.read(&mut buff)?;
         file.write(&buff)?;
         if bytes_copied < BUFFER_LEN {
+            tx.send(ProgressCommand::Done()).unwrap();
             break;
         }
     }
-
     let response = "Transfer successful!";
 
     stream.write(response.as_bytes())?;
