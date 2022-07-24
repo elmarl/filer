@@ -5,6 +5,7 @@ use std::io::{BufReader, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::Sender;
 use std::thread;
+use utils::ProgressCommand;
 
 pub const BUFFER_LEN: usize = 1024;
 
@@ -18,8 +19,6 @@ pub mod utils {
 }
 pub mod server{
     use super::*;
-    use utils::ProgressCommand;
-    // use crate::BUFFER_LEN;
 
     pub fn listen(path: String, port: u16, tx: Sender<ProgressCommand>) -> Result<(), Error> {
         let handle = thread::spawn(move || {
@@ -70,10 +69,6 @@ pub mod server{
 
 pub mod client {
     use super::*;
-    use utils::ProgressCommand;
-
-    // no sense in error propagation inside thread, eg ? operator.
-    // handle error inside the thread.
 
     pub fn send_file(
         ip: String,
